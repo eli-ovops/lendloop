@@ -1,0 +1,109 @@
+{
+  "name": "LendLoop 03 — Error workflow (set as Error Workflow for 01 & 02)",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## LendLoop — workflow 3: error workflow\n\nImport this workflow, copy its ID, and paste it as the **Error Workflow** in the Settings of workflows 01 and 02 (their exports contain the placeholder `REPLACE_WITH_ERROR_WORKFLOW_ID`).\n\nOn any failure it POSTs a signed record to Convex `POST /n8n/error-logged`, so automation failures are visible next to the lending data instead of only in n8n logs.",
+        "height": 240,
+        "width": 420,
+        "color": 4
+      },
+      "id": "00000000-0000-4000-8000-000000000300",
+      "name": "Sticky note — setup",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        -40
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "00000000-0000-4000-8000-000000000301",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        -80,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Runs when workflow 01 or 02 fails. Builds a stable eventId from the\n// failed execution so the Convex error log stays idempotent too, then\n// signs the payload like every other Convex callback.\n\nfunction sign(rawBody) {\n  const secret = $env.LENDLOOP_WEBHOOK_SECRET;\n  if (!secret) throw new Error('LENDLOOP_WEBHOOK_SECRET is not set in the n8n environment.');\n  return require('crypto').createHmac('sha256', secret).update(rawBody, 'utf8').digest('hex');\n}\nfunction convexUrl(path) {\n  const base = ($env.CONVEX_SITE_URL || '').replace(/\\/$/, '');\n  if (!base) throw new Error('CONVEX_SITE_URL is not set in the n8n environment (use the .convex.site URL).');\n  return base + path;\n}\nconst data = $input.first().json;\nconst executionId = (data.execution && data.execution.id) || 'unknown';\nconst workflowId = (data.workflow && data.workflow.id) || 'unknown';\nconst workflowName = (data.workflow && data.workflow.name) || 'unknown workflow';\nconst message = (data.execution && data.execution.error && data.execution.error.message) || 'unknown error';\nconst rawBody = JSON.stringify({\n  eventId: 'error:' + workflowId + ':' + executionId,\n  detail: ('Workflow \"' + workflowName + '\" execution ' + executionId + ' failed: ' + message).slice(0, 480),\n});\nreturn [{ json: {\n  rawBody,\n  signature: 'sha256=' + sign(rawBody),\n  url: convexUrl('/n8n/error-logged'),\n} }];"
+      },
+      "id": "00000000-0000-4000-8000-000000000302",
+      "name": "Build signed error log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        140,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-LendLoop-Signature",
+              "value": "={{ $json.signature }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.rawBody }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "00000000-0000-4000-8000-000000000303",
+      "name": "Log error to Convex",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        360,
+        200
+      ]
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Build signed error log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build signed error log": {
+      "main": [
+        [
+          {
+            "node": "Log error to Convex",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "pinData": {},
+  "active": false
+}

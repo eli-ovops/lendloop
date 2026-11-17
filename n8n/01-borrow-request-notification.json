@@ -1,0 +1,203 @@
+{
+  "name": "LendLoop 01 — Borrow request notification",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## LendLoop — workflow 1: borrow-request notification\n\n**Trigger:** Convex action `notifications.sendBorrowRequestNotification` POSTs here whenever a borrow request is created.\n\n**Security:** the first Code node verifies `X-LendLoop-Signature` (HMAC-SHA256, shared secret in env `LENDLOOP_WEBHOOK_SECRET`) and throws on mismatch.\n\n**Write-back:** after the email is sent, the workflow calls Convex `POST /n8n/notification-logged` (signed) with the stable `eventId` — Convex deduplicates on it.\n\n**Setup:** set env `LENDLOOP_WEBHOOK_SECRET`, `CONVEX_SITE_URL` (the `.convex.site` URL); create/select an SMTP credential on the email node; set this workflow as active; in Settings set the Error Workflow to workflow 03 after importing it.",
+        "height": 320,
+        "width": 420,
+        "color": 4
+      },
+      "id": "00000000-0000-4000-8000-000000000100",
+      "name": "Sticky note — setup",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lendloop/borrow-request",
+        "responseMode": "onReceived",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "00000000-0000-4000-8000-000000000101",
+      "name": "Webhook — borrow request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -80,
+        200
+      ],
+      "webhookId": "lendloop-borrow-request"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Verify the HMAC-SHA256 signature Convex put on this webhook.\n// Convex signs the exact JSON string it POSTs; n8n's JSON parser preserves\n// key order, so re-serialising the parsed body reproduces the signed bytes.\n// If this n8n version exposes the untouched raw body (Webhook node option\n// \"Raw Body\" is ON), it is preferred via json.rawBody.\nconst crypto = require('crypto');\nconst secret = $env.LENDLOOP_WEBHOOK_SECRET;\nif (!secret) throw new Error('LENDLOOP_WEBHOOK_SECRET is not set in the n8n environment.');\n\nconst data = $input.first().json;\nconst headers = data.headers || {};\nconst headerValue = headers['x-lendloop-signature'] || '';\nconst provided = headerValue.replace(/^sha256=/, '').toLowerCase();\nconst rawBody = typeof data.rawBody === 'string' ? data.rawBody : JSON.stringify(data.body);\nconst expected = crypto.createHmac('sha256', secret).update(rawBody, 'utf8').digest('hex');\n\nconst a = Buffer.from(provided, 'utf8');\nconst b = Buffer.from(expected, 'utf8');\nconst valid = a.length === b.length && crypto.timingSafeEqual(a, b);\nif (!valid) {\n  // Throwing stops the run and routes it to the error workflow.\n  throw new Error('Invalid webhook signature - refusing to process this delivery.');\n}\nreturn [{ json: { ...data.body } }];"
+      },
+      "id": "00000000-0000-4000-8000-000000000102",
+      "name": "Verify HMAC signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        140,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build the owner notification email from the verified payload.\nconst p = $input.first().json;\nconst toolName = p.tool && p.tool.name ? p.tool.name : 'a tool';\nconst borrowerName = p.borrower && p.borrower.name ? p.borrower.name : 'A neighbour';\nconst ownerEmail = p.owner && p.owner.email ? p.owner.email : '';\nif (!ownerEmail) throw new Error('Payload is missing the tool owner email.');\nconst text = [\n  'Hi ' + (p.owner.name || 'there') + ',',\n  '',\n  borrowerName + ' would like to borrow your \"' + toolName + '\"',\n  'from ' + p.startDate + ' to ' + p.endDate + ' (return by ' + p.endDate + ').',\n  p.note ? 'Their note: \"' + p.note + '\"' : '',\n  '',\n  'Open LendLoop -> My loans to approve or decline the request.',\n  'Event reference: ' + p.eventId,\n].filter(Boolean).join('\\n');\nreturn [{ json: {\n  toEmail: ownerEmail,\n  subject: 'LendLoop: new borrow request for \"' + toolName + '\"',\n  text,\n  eventId: p.eventId,\n  borrowRequestId: p.borrowRequestId,\n} }];"
+      },
+      "id": "00000000-0000-4000-8000-000000000103",
+      "name": "Compose owner email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        360,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "lendloop@example.com",
+        "toEmail": "={{ $json.toEmail }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "text",
+        "text": "={{ $json.text }}",
+        "options": {}
+      },
+      "id": "00000000-0000-4000-8000-000000000104",
+      "name": "Email tool owner",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        580,
+        200
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "REPLACE_WITH_SMTP_CREDENTIAL_ID",
+          "name": "LendLoop SMTP — create & select"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Sign the write-back body for Convex. The eventId is the idempotency key:\n// Convex inserts at most one notificationLog row per eventId, so webhook\n// retries can never double-log.\n\nfunction sign(rawBody) {\n  const secret = $env.LENDLOOP_WEBHOOK_SECRET;\n  if (!secret) throw new Error('LENDLOOP_WEBHOOK_SECRET is not set in the n8n environment.');\n  return require('crypto').createHmac('sha256', secret).update(rawBody, 'utf8').digest('hex');\n}\nfunction convexUrl(path) {\n  const base = ($env.CONVEX_SITE_URL || '').replace(/\\/$/, '');\n  if (!base) throw new Error('CONVEX_SITE_URL is not set in the n8n environment (use the .convex.site URL).');\n  return base + path;\n}\nconst item = $input.first().json;\nconst rawBody = JSON.stringify({\n  eventId: item.eventId,\n  borrowRequestId: item.borrowRequestId,\n  channel: 'email',\n});\nreturn [{ json: {\n  rawBody,\n  signature: 'sha256=' + sign(rawBody),\n  url: convexUrl('/n8n/notification-logged'),\n} }];"
+      },
+      "id": "00000000-0000-4000-8000-000000000105",
+      "name": "Build signed write-back",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-LendLoop-Signature",
+              "value": "={{ $json.signature }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.rawBody }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "00000000-0000-4000-8000-000000000106",
+      "name": "Write back to Convex (idempotent)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1020,
+        200
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook — borrow request": {
+      "main": [
+        [
+          {
+            "node": "Verify HMAC signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify HMAC signature": {
+      "main": [
+        [
+          {
+            "node": "Compose owner email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose owner email": {
+      "main": [
+        [
+          {
+            "node": "Email tool owner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email tool owner": {
+      "main": [
+        [
+          {
+            "node": "Build signed write-back",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build signed write-back": {
+      "main": [
+        [
+          {
+            "node": "Write back to Convex (idempotent)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "REPLACE_WITH_ERROR_WORKFLOW_ID"
+  },
+  "staticData": null,
+  "pinData": {},
+  "active": false
+}

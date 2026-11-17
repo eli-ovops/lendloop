@@ -1,0 +1,36 @@
+# Self-hosted n8n for LendLoop automation (workflows live in ./n8n).
+#
+# Usage:
+#   1. Create a `.env` file next to this file with:
+#        LENDLOOP_WEBHOOK_SECRET=<same value as the Convex env N8N_WEBHOOK_SECRET>
+#        CONVEX_SITE_URL=https://<your-deployment>.convex.site
+#   2. docker compose up -d
+#   3. Open http://localhost:5678, create the owner account, then import
+#      the three JSON files from ./n8n (Workflows -> Import from File).
+#
+# The two N8N_* settings below matter:
+# - NODE_FUNCTION_ALLOW_BUILTIN=crypto lets the Code nodes use Node's
+#   crypto module for HMAC signing/verification.
+# - N8N_BLOCK_ENV_ACCESS_IN_NODE=false lets Code nodes read
+#   LENDLOOP_WEBHOOK_SECRET / CONVEX_SITE_URL via $env. (In n8n Cloud,
+#   set the same variables in the instance environment instead.)
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: lendloop-n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      - TZ=Europe/Berlin
+      - GENERIC_TIMEZONE=Europe/Berlin
+      - WEBHOOK_URL=http://localhost:5678/
+      - LENDLOOP_WEBHOOK_SECRET=${LENDLOOP_WEBHOOK_SECRET:?set LENDLOOP_WEBHOOK_SECRET in .env}
+      - CONVEX_SITE_URL=${CONVEX_SITE_URL:?set CONVEX_SITE_URL in .env}
+      - NODE_FUNCTION_ALLOW_BUILTIN=crypto
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+    volumes:
+      - n8n_data:/home/node/.n8n
+
+volumes:
+  n8n_data:
