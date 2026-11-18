@@ -64,11 +64,92 @@
     },
     {
       "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst secret = $env.LENDLOOP_WEBHOOK_SECRET;\nconst site = ($env.CONVEX_SITE_URL || '').replace(/\\/$/, '');\nif (!secret || !site) throw new Error('Configure the Convex site URL and shared secret.');\nconst rawBody = JSON.stringify({\n  eventId: item.eventId,\n  kind: 'borrow_request_created',\n  borrowRequestId: item.borrowRequestId,\n});\nconst signature = require('crypto').createHmac('sha256', secret).update(rawBody, 'utf8').digest('hex');\nreturn [{\n  json: { rawBody, signature: 'sha256=' + signature, url: site + '/n8n/claim-email' },\n  pairedItem: { item: 0 },\n}];"
+      },
+      "id": "29ebf767-ced7-41fa-9176-8192965f668c",
+      "name": "Build signed delivery claim",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        580,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-LendLoop-Signature",
+              "value": "={{ $json.signature }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.rawBody }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "95387826-8d14-4230-b1cd-6eb1cbcd9323",
+      "name": "Claim email delivery",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        800,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "52b3102f-37d2-454a-bb53-65647ec23e52",
+              "leftValue": "={{ $json.claimed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "9391a355-906a-4026-91ec-5ea9406aff04",
+      "name": "Delivery claimed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1020,
+        200
+      ]
+    },
+    {
+      "parameters": {
         "fromEmail": "lendloop@example.com",
-        "toEmail": "={{ $json.toEmail }}",
-        "subject": "={{ $json.subject }}",
+        "toEmail": "={{ $('Compose owner email').item.json.toEmail }}",
+        "subject": "={{ $('Compose owner email').item.json.subject }}",
         "emailFormat": "text",
-        "text": "={{ $json.text }}",
+        "text": "={{ $('Compose owner email').item.json.text }}",
         "options": {}
       },
       "id": "00000000-0000-4000-8000-000000000104",
@@ -76,7 +157,7 @@
       "type": "n8n-nodes-base.emailSend",
       "typeVersion": 2.1,
       "position": [
-        580,
+        1240,
         200
       ],
       "credentials": {
@@ -84,18 +165,19 @@
           "id": "REPLACE_WITH_SMTP_CREDENTIAL_ID",
           "name": "LendLoop SMTP — create & select"
         }
-      }
+      },
+      "retryOnFail": false
     },
     {
       "parameters": {
-        "jsCode": "// Sign the write-back body for Convex. The eventId is the idempotency key:\n// Convex inserts at most one notificationLog row per eventId, so webhook\n// retries can never double-log.\n\nfunction sign(rawBody) {\n  const secret = $env.LENDLOOP_WEBHOOK_SECRET;\n  if (!secret) throw new Error('LENDLOOP_WEBHOOK_SECRET is not set in the n8n environment.');\n  return require('crypto').createHmac('sha256', secret).update(rawBody, 'utf8').digest('hex');\n}\nfunction convexUrl(path) {\n  const base = ($env.CONVEX_SITE_URL || '').replace(/\\/$/, '');\n  if (!base) throw new Error('CONVEX_SITE_URL is not set in the n8n environment (use the .convex.site URL).');\n  return base + path;\n}\nconst item = $input.first().json;\nconst rawBody = JSON.stringify({\n  eventId: item.eventId,\n  borrowRequestId: item.borrowRequestId,\n  channel: 'email',\n});\nreturn [{ json: {\n  rawBody,\n  signature: 'sha256=' + sign(rawBody),\n  url: convexUrl('/n8n/notification-logged'),\n} }];"
+        "jsCode": "// SMTP returns a receipt, so use the linked item for the event identity.\nfunction sign(rawBody) {\n  const secret = $env.LENDLOOP_WEBHOOK_SECRET;\n  if (!secret) throw new Error('LENDLOOP_WEBHOOK_SECRET is not set in the n8n environment.');\n  return require('crypto').createHmac('sha256', secret).update(rawBody, 'utf8').digest('hex');\n}\nfunction convexUrl(path) {\n  const base = ($env.CONVEX_SITE_URL || '').replace(/\\/$/, '');\n  if (!base) throw new Error('CONVEX_SITE_URL is not set in the n8n environment (use the .convex.site URL).');\n  return base + path;\n}\nconst item = $('Compose owner email').itemMatching(0).json;\nconst rawBody = JSON.stringify({\n  eventId: item.eventId,\n  borrowRequestId: item.borrowRequestId,\n  channel: 'email',\n});\nreturn [{ json: {\n  rawBody,\n  signature: 'sha256=' + sign(rawBody),\n  url: convexUrl('/n8n/notification-logged'),\n}, pairedItem: { item: 0 } }];"
       },
       "id": "00000000-0000-4000-8000-000000000105",
       "name": "Build signed write-back",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        800,
+        1460,
         200
       ]
     },
@@ -129,7 +211,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1020,
+        1680,
         200
       ]
     }
@@ -161,7 +243,7 @@
       "main": [
         [
           {
-            "node": "Email tool owner",
+            "node": "Build signed delivery claim",
             "type": "main",
             "index": 0
           }
@@ -184,6 +266,40 @@
         [
           {
             "node": "Write back to Convex (idempotent)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delivery claimed?": {
+      "main": [
+        [
+          {
+            "node": "Email tool owner",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Build signed delivery claim": {
+      "main": [
+        [
+          {
+            "node": "Claim email delivery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim email delivery": {
+      "main": [
+        [
+          {
+            "node": "Delivery claimed?",
             "type": "main",
             "index": 0
           }

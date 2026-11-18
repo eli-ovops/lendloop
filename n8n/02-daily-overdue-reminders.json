@@ -88,7 +88,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// One item per overdue loan. The eventId embeds the UTC date, which makes\n// the write-back idempotent PER DAY: re-running the workflow the same day\n// cannot send a duplicate log row, and Convex dedupes on this key.\nconst res = $input.first().json;\nconst today = new Date().toISOString().slice(0, 10);\nconst loans = Array.isArray(res.overdue) ? res.overdue : [];\nreturn loans.map((loan) => ({ json: {\n  ...loan,\n  eventId: 'overdue:' + loan.borrowRequestId + ':' + today,\n  toEmail: loan.borrowerEmail,\n  subject: 'LendLoop reminder: \"' + loan.toolName + '\" is ' + loan.daysOverdue + ' day(s) overdue',\n  text: [\n    'Hi ' + loan.borrowerName + ',',\n    '',\n    'Just a friendly nudge: the \"' + loan.toolName + '\" you borrowed from ' + loan.ownerName +\n      ' was due back on ' + loan.endDate + ' and is now ' + loan.daysOverdue + ' day(s) overdue.',\n    'Please arrange the return as soon as you can.',\n    '',\n    '— LendLoop',\n  ].join('\\n'),\n} }));"
+        "jsCode": "// One claim per overdue loan per UTC day. An address is required for delivery.\nconst res = $input.first().json;\nconst today = new Date().toISOString().slice(0, 10);\nconst loans = Array.isArray(res.overdue) ? res.overdue : [];\nreturn loans.filter((loan) => loan.borrowerEmail).map((loan) => ({ json: {\n  ...loan,\n  eventId: 'overdue:' + loan.borrowRequestId + ':' + today,\n  toEmail: loan.borrowerEmail,\n  subject: 'LendLoop reminder: \"' + loan.toolName + '\" is ' + loan.daysOverdue + ' day(s) overdue',\n  text: [\n    'Hi ' + loan.borrowerName + ',',\n    '',\n    'Just a friendly nudge: the \"' + loan.toolName + '\" you borrowed from ' + loan.ownerName +\n      ' was due back on ' + loan.endDate + ' and is now ' + loan.daysOverdue + ' day(s) overdue.',\n    'Please arrange the return as soon as you can.',\n    '',\n    '— LendLoop',\n  ].join('\\n'),\n} }));"
       },
       "id": "00000000-0000-4000-8000-000000000204",
       "name": "Flatten overdue list",
@@ -115,11 +115,92 @@
     },
     {
       "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst secret = $env.LENDLOOP_WEBHOOK_SECRET;\nconst site = ($env.CONVEX_SITE_URL || '').replace(/\\/$/, '');\nif (!secret || !site) throw new Error('Configure the Convex site URL and shared secret.');\nconst rawBody = JSON.stringify({\n  eventId: item.eventId,\n  kind: 'overdue_reminder',\n  borrowRequestId: item.borrowRequestId,\n});\nconst signature = require('crypto').createHmac('sha256', secret).update(rawBody, 'utf8').digest('hex');\nreturn [{\n  json: { rawBody, signature: 'sha256=' + signature, url: site + '/n8n/claim-email' },\n  pairedItem: { item: 0 },\n}];"
+      },
+      "id": "3d4c6bdf-8f35-4e63-b55b-da28626cb159",
+      "name": "Build signed delivery claim",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1020,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-LendLoop-Signature",
+              "value": "={{ $json.signature }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.rawBody }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "4fa9ec08-fdb4-436a-8c8e-b6ea15296e76",
+      "name": "Claim email delivery",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1240,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "9770e4ca-2a44-4f28-8797-095d3d1f4056",
+              "leftValue": "={{ $json.claimed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "4841201a-fe53-4d63-b454-75b33c331aa1",
+      "name": "Delivery claimed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1460,
+        120
+      ]
+    },
+    {
+      "parameters": {
         "fromEmail": "lendloop@example.com",
-        "toEmail": "={{ $json.toEmail }}",
-        "subject": "={{ $json.subject }}",
+        "toEmail": "={{ $('Loop over loans').item.json.toEmail }}",
+        "subject": "={{ $('Loop over loans').item.json.subject }}",
         "emailFormat": "text",
-        "text": "={{ $json.text }}",
+        "text": "={{ $('Loop over loans').item.json.text }}",
         "options": {}
       },
       "id": "00000000-0000-4000-8000-000000000206",
@@ -127,7 +208,7 @@
       "type": "n8n-nodes-base.emailSend",
       "typeVersion": 2.1,
       "position": [
-        1020,
+        1680,
         120
       ],
       "credentials": {
@@ -135,18 +216,19 @@
           "id": "REPLACE_WITH_SMTP_CREDENTIAL_ID",
           "name": "LendLoop SMTP — create & select"
         }
-      }
+      },
+      "retryOnFail": false
     },
     {
       "parameters": {
-        "jsCode": "// Signed, idempotent write-back for one sent reminder.\n\nfunction sign(rawBody) {\n  const secret = $env.LENDLOOP_WEBHOOK_SECRET;\n  if (!secret) throw new Error('LENDLOOP_WEBHOOK_SECRET is not set in the n8n environment.');\n  return require('crypto').createHmac('sha256', secret).update(rawBody, 'utf8').digest('hex');\n}\nfunction convexUrl(path) {\n  const base = ($env.CONVEX_SITE_URL || '').replace(/\\/$/, '');\n  if (!base) throw new Error('CONVEX_SITE_URL is not set in the n8n environment (use the .convex.site URL).');\n  return base + path;\n}\nconst item = $input.first().json;\nconst rawBody = JSON.stringify({\n  eventId: item.eventId,\n  borrowRequestId: item.borrowRequestId,\n  daysOverdue: item.daysOverdue,\n});\nreturn [{ json: {\n  rawBody,\n  signature: 'sha256=' + sign(rawBody),\n  url: convexUrl('/n8n/reminder-logged'),\n} }];"
+        "jsCode": "// SMTP returns a receipt, so use the linked item for the event identity.\nfunction sign(rawBody) {\n  const secret = $env.LENDLOOP_WEBHOOK_SECRET;\n  if (!secret) throw new Error('LENDLOOP_WEBHOOK_SECRET is not set in the n8n environment.');\n  return require('crypto').createHmac('sha256', secret).update(rawBody, 'utf8').digest('hex');\n}\nfunction convexUrl(path) {\n  const base = ($env.CONVEX_SITE_URL || '').replace(/\\/$/, '');\n  if (!base) throw new Error('CONVEX_SITE_URL is not set in the n8n environment (use the .convex.site URL).');\n  return base + path;\n}\nconst item = $('Loop over loans').itemMatching(0).json;\nconst rawBody = JSON.stringify({\n  eventId: item.eventId,\n  borrowRequestId: item.borrowRequestId,\n  daysOverdue: item.daysOverdue,\n});\nreturn [{ json: {\n  rawBody,\n  signature: 'sha256=' + sign(rawBody),\n  url: convexUrl('/n8n/reminder-logged'),\n}, pairedItem: { item: 0 } }];"
       },
       "id": "00000000-0000-4000-8000-000000000207",
       "name": "Build signed reminder write-back",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1240,
+        1900,
         120
       ]
     },
@@ -180,7 +262,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1460,
+        2120,
         120
       ]
     }
@@ -232,14 +314,14 @@
     },
     "Loop over loans": {
       "main": [
+        [],
         [
           {
-            "node": "Email borrower reminder",
+            "node": "Build signed delivery claim",
             "type": "main",
             "index": 0
           }
-        ],
-        []
+        ]
       ]
     },
     "Email borrower reminder": {
@@ -269,6 +351,46 @@
         [
           {
             "node": "Loop over loans",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delivery claimed?": {
+      "main": [
+        [
+          {
+            "node": "Email borrower reminder",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop over loans",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build signed delivery claim": {
+      "main": [
+        [
+          {
+            "node": "Claim email delivery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim email delivery": {
+      "main": [
+        [
+          {
+            "node": "Delivery claimed?",
             "type": "main",
             "index": 0
           }

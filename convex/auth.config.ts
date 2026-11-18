@@ -6,7 +6,7 @@
  * (Convex dashboard -> Settings -> Environment Variables, or
  * `npx convex env set CLERK_JWT_ISSUER_DOMAIN https://<your-clerk-domain>`).
  */
-export default {
+const authConfig = {
   providers: [
     {
       domain: process.env.CLERK_JWT_ISSUER_DOMAIN,
@@ -14,3 +14,5 @@ export default {
     },
   ],
 };
+
+export default authConfig;

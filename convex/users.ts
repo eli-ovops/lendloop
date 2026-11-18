@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { internalMutation, mutation, query } from "./_generated/server";
 import { getCurrentUser, requireAdmin } from "./lib/auth";
+import { publicDisplayName } from "./lib/displayName";
 
 /**
  * Upsert the signed-in Clerk user into the `users` table.
@@ -20,7 +21,7 @@ export const store = mutation({
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) throw new Error("Called storeUser without authentication.");
 
-    const name = identity.name ?? identity.email ?? "Neighbour";
+    const name = publicDisplayName(identity.name);
     const email = identity.email ?? "";
     const existing = await getCurrentUser(ctx);
     const now = Date.now();

@@ -60,15 +60,15 @@ export default defineSchema({
     returnedAt: v.optional(v.number()),
   })
     .index("by_tool", ["toolId"])
+    .index("by_tool_status", ["toolId", "status"])
     .index("by_borrower", ["borrowerId"])
     .index("by_owner", ["ownerId"])
     .index("by_status", ["status"]),
 
   /**
-   * Append-only log of automation events written back by n8n.
-   * `eventId` is the idempotency key: the write-back mutation refuses to
-   * insert a second row for the same eventId, so retried webhooks and
-   * repeated daily reminder runs cannot duplicate effects.
+   * Delivery ledger keyed by eventId. n8n claims an email before handing
+   * it to SMTP and records acceptance afterwards. Rows with no delivery
+   * state are legacy write-backs or error reports.
    */
   notificationLog: defineTable({
     eventId: v.string(),
@@ -76,5 +76,7 @@ export default defineSchema({
     borrowRequestId: v.optional(v.id("borrowRequests")),
     detail: v.string(),
     createdAt: v.number(),
+    deliveryState: v.optional(v.union(v.literal("claimed"), v.literal("sent"))),
+    sentAt: v.optional(v.number()),
   }).index("by_eventId", ["eventId"]),
 });

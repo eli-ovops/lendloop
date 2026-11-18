@@ -1,7 +1,7 @@
 # LendLoop — implementation and verification notes
 
 LendLoop is a neighbourhood tool-lending take-home project, built with Next.js,
-TypeScript, Clerk, Convex and n8n. See [README.md](./README.md) for the original
+TypeScript, Clerk, Convex and n8n. See [README.md](./README.md) for the
 setup instructions, architecture, permissions and workflow exports.
 
 ## Source publication
@@ -10,8 +10,9 @@ This public repository was imported from a supplied source archive. The archive
 did not contain a `.git` directory, so this repository starts with a new initial
 import rather than presenting reconstructed development history.
 
-The original README is preserved unchanged. Private application correspondence
-and internal delivery notes are excluded from the public version.
+Private application correspondence and internal delivery notes are excluded
+from the public version. The README now reflects the loan-state and email
+delivery checks added after the initial import.
 
 ## Integration boundary
 
@@ -34,3 +35,12 @@ repository.
 The build used synthetic public configuration values. These checks establish
 local type-checking and build results; they do not establish that real Clerk,
 Convex, n8n or email integrations have been exercised.
+
+## Portfolio revision checks — 2026-11-18
+
+- `npm test` passed 8 tests. The suite exercises the Convex handlers through
+  a simulated database and checks both n8n exports, including their signing
+  and receipt code with mock workflow data.
+- `npm run lint` and `tsc --noEmit --incremental false` passed.
+- `npm run build` passed using synthetic public configuration. Testing
+  with live Clerk, Convex, n8n and a test mailbox is a separate setup step.

@@ -39,7 +39,7 @@ export default function AdminPage() {
                 <p className="text-sm opacity-60">Loading…</p>
               )}
               <ul className="space-y-2">
-                {requests?.map((r: any) => (
+                {requests?.map((r) => (
                   <li
                     key={r._id}
                     className="rounded-lg border border-black/10 px-4 py-2 text-sm dark:border-white/15"
@@ -54,7 +54,7 @@ export default function AdminPage() {
             <section>
               <h2 className="mb-3 text-xl font-bold">Users</h2>
               <ul className="space-y-2">
-                {users?.map((u: any) => (
+                {users?.map((u) => (
                   <li
                     key={u._id}
                     className="rounded-lg border border-black/10 px-4 py-2 text-sm dark:border-white/15"

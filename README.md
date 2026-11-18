@@ -2,12 +2,21 @@
 
 LendLoop lets neighbours lend and borrow tools: browse a public board, list a
 tool, request it for a date range, approve/decline, and confirm the return.
-Automation (owner notifications, daily overdue reminders) runs in **n8n** over
-HMAC-signed webhooks, with idempotent write-backs into the database.
+Automation (owner notifications and daily overdue reminders) runs in **n8n**
+over HMAC-signed webhooks. Convex records a delivery claim before each send
+attempt and the SMTP acceptance afterwards.
 
 **Stack:** Next.js (App Router) + TypeScript · Clerk (authentication) ·
-Convex (database + backend functions + HTTP endpoints) · n8n (automation,
-self-hosted via Docker or n8n Cloud)
+Convex (database + backend functions + HTTP endpoints) · n8n (self-hosted
+automation)
+
+## Verify the core logic
+
+Use Node 22 and run `npm ci`, `npm test`, and `npm run lint`. The tests
+exercise the Convex handlers with synthetic data, plus the structure of the
+exported n8n workflows. They cover the active-loan guard, return of older
+records, public owner labels and signed email claims. The connected services
+and live email delivery can be checked separately with the setup below.
 
 ---
 
@@ -37,8 +46,8 @@ self-hosted via Docker or n8n Cloud)
                               │    └─ scheduler ─▶ internal  │
                               │       action: sign + POST ───┼──▶ n8n workflow 01
                               └──────────────────────────────┘    (verify HMAC,
-        ▲ signed HTTP callbacks        │                          email owner,
-        │ (.convex.site)               │                          write back)
+        ▲ signed HTTP callbacks        │                          claim and
+        │ (.convex.site)               │                          send email)
         │                              │
         └──────────────────────────────┴── n8n workflow 02 (daily cron:
                                              signed fetch of overdue loans,
@@ -61,10 +70,10 @@ never trusted from the client).
 | Browse the board | anyone, signed out OK | `tools.list` is a public query |
 | List a tool | any signed-in user | `tools.create` → `requireUser` |
 | Request a borrow | signed-in user, **not** the tool's owner, tool must be available, no overlapping pending/approved request of mine | `borrowRequests.request` |
-| Approve / decline | tool owner **or admin** | `borrowRequests.approve/decline` → `canManage` |
+| Approve / decline | tool owner **or admin**; approval requires an available tool with no active loan | `borrowRequests.approve/decline` → `canManage` |
 | Cancel | the borrower (or admin), pending only | `borrowRequests.cancel` |
 | Mark returned | tool owner **or admin** (a borrower cannot close their own loan) | `borrowRequests.markReturned` |
-| Pause / remove a tool | owner or admin; removal cancels pending requests | `tools.setAvailability` / `tools.remove` |
+| Pause / remove a tool | owner or admin; an active loan blocks relisting and removal | `tools.setAvailability` / `tools.remove` |
 | View all users / all requests | admin only | `requireAdmin` in both `listAll` queries |
 | Change a role | **nobody via the API** — internal mutation only (Convex dashboard / CLI) | `users.setRole` is an `internalMutation` |
 
@@ -87,16 +96,16 @@ pattern:
   n8n: `LENDLOOP_WEBHOOK_SECRET` (same value). Nothing secret is stored in
   the database or in the workflow JSON (the SMTP credential is a named
   placeholder you link after import).
-- **Idempotent write-backs.** Every automation event carries a stable
-  `eventId` (`borrow-request:<id>`, `overdue:<id>:<YYYY-MM-DD>`,
-  `error:<workflowId>:<executionId>`). Convex's `logNotification` inserts at
-  most one `notificationLog` row per `eventId`, so retried webhooks and
-  same-day cron re-runs are safe.
+- **Delivery claims and receipts.** Before sending, n8n claims a stable
+  `eventId` through a signed Convex endpoint. A repeated event skips SMTP,
+  and a receipt updates the same row. Reminder IDs include the UTC date.
+  A claim without a receipt needs manual review against the mail provider’s
+  delivery record. A retry from the trigger skips the existing claim.
 
 | # | File | Trigger | Does |
 | --- | --- | --- | --- |
-| 01 | `n8n/01-borrow-request-notification.json` | Webhook `POST /webhook/lendloop/borrow-request` from a Convex scheduled action | Verifies HMAC → emails the tool owner → signed write-back to `POST /n8n/notification-logged` |
-| 02 | `n8n/02-daily-overdue-reminders.json` | Schedule, daily 09:00 | Signed fetch from `POST /n8n/overdue-check` → one reminder email per overdue loan → signed write-back per loan to `POST /n8n/reminder-logged` |
+| 01 | `n8n/01-borrow-request-notification.json` | Webhook `POST /webhook/lendloop/borrow-request` from a Convex scheduled action | Verify HMAC → claim delivery → email owner → record the signed receipt |
+| 02 | `n8n/02-daily-overdue-reminders.json` | Schedule, daily 09:00 | Fetch overdue loans → claim each reminder → email borrower → record the signed receipt |
 | 03 | `n8n/03-error-workflow.json` | n8n Error Trigger | Signed failure record to `POST /n8n/error-logged`. **After importing, paste this workflow's ID into the Error Workflow setting of 01 and 02** (their exports carry the placeholder `REPLACE_WITH_ERROR_WORKFLOW_ID`) |
 
 Convex HTTP endpoints are served from the **site URL**
@@ -108,26 +117,28 @@ Convex HTTP endpoints are served from the **site URL**
 - `users` — Clerk identity (`tokenIdentifier`, subject), name, email, `role`.
 - `tools` — owner, name/description/category/condition, optional
   neighbourhood-level `location`, `available` flag. Approving a request
-  flips `available` off; marking the return flips it back on.
+  flips `available` off. A tool can be relisted after its last active loan
+  is marked returned.
 - `borrowRequests` — tool, borrower, denormalised owner, `startDate` /
   `endDate` (`YYYY-MM-DD`), status
-  `pending → approved / declined / cancelled → returned`.
-- `notificationLog` — append-only automation log, unique by `eventId`.
+  `pending → approved → returned`, or `pending → declined / cancelled`.
+- `notificationLog` — automation ledger keyed by `eventId`, with a
+  reservation and optional SMTP receipt for each email.
 
 **Data minimisation:** no postal addresses (neighbourhood only, optional),
-no phone numbers, no free-text beyond an optional 200-char borrow note, and
-the public board never exposes owner emails — contact happens through the
-request flow.
+no phone numbers, and a 200-character limit on borrow notes. The public
+owner label uses the display name or “Neighbour”. Account emails are used
+for backend coordination through the request flow.
 
 ## Local setup
 
-Prerequisites: Node 20+, a Clerk account, a Convex account, Docker (for
-self-hosted n8n) or an n8n Cloud account.
+Local setup uses Node 22, a Clerk application, a Convex deployment and a
+self-hosted n8n instance. Docker Compose is available for a local n8n preview.
 
 ### 1. Install
 
 ```bash
-npm install
+npm ci
 ```
 
 ### 2. Clerk
@@ -144,13 +155,15 @@ npx convex dev          # creates/links a deployment, writes NEXT_PUBLIC_CONVEX_
                         # regenerates convex/_generated with full types
 npx convex env set CLERK_JWT_ISSUER_DOMAIN https://<your-clerk-issuer>
 npx convex env set ADMIN_EMAILS you@example.com
-npx convex env set N8N_WEBHOOK_SECRET <generate-a-long-random-string>
-npx convex env set N8N_BORROW_WEBHOOK_URL http://localhost:5678/webhook/lendloop/borrow-request
 ```
 
-(The `convex/_generated` folder in this repo is a hand-written stand-in so
-the project type-checks before the first `npx convex dev`; codegen replaces
-it with fully-typed references.)
+Set `N8N_WEBHOOK_SECRET` in the Convex dashboard. For
+`N8N_BORROW_WEBHOOK_URL`, use an n8n webhook URL reachable from the
+selected Convex deployment. A hosted deployment needs an independently
+reachable HTTPS endpoint.
+
+The typed files in `convex/_generated` allow offline type-checking. Convex
+codegen replaces them when you connect a deployment.
 
 ### 4. Run the app
 
@@ -186,7 +199,8 @@ to the reachable production webhook URL (`/webhook/...`, not
    (Convex dashboard → Data).
 2. A approves; set the request's `endDate` to yesterday in the dashboard;
    run workflow 02 manually → B gets a reminder and a
-   `overdue:<id>:<today>` log row appears. Run it again — no duplicate row.
+   `overdue:<id>:<today>` log row appears. Run it again and confirm the
+   workflow skips the send and keeps the same row.
 
 ## What I would change for production
 
@@ -199,15 +213,13 @@ to the reachable production webhook URL (`/webhook/...`, not
 - **Availability calendar**: current model is one active loan per tool via a
   boolean; a production version should model date-range conflicts across
   different borrowers.
-- **Tests**: unit tests for the Convex permission matrix (the helpers in
-  `convex/lib/auth.ts` are written to be testable) and a contract test for
-  the HMAC round-trip.
+- **Integration tests**: run the configured Clerk, Convex, n8n and test
+  mailboxes together, including recovery after an uncertain SMTP result.
 - **Observability**: ship `notificationLog` errors to an alert channel;
   today the error workflow records them in Convex, which still needs a
   human (or another small workflow) to look.
-- **PII review**: emails in `notificationLog.detail` strings are minimised
-  already; a production deployment in a healthcare-adjacent context should
-  also set a retention window for the log table.
+- **Data retention**: set a limit for workflow execution logs and review
+  which details support teams actually need to retain.
 
 ## Repository layout
 

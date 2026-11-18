@@ -13,8 +13,8 @@ import { hmacSha256Hex } from "./lib/hmac";
  * The JSON body is signed with HMAC-SHA256 and sent as
  * `X-LendLoop-Signature: sha256=<hex>`. n8n verifies the signature before
  * doing anything (see n8n/01-borrow-request-notification.json), and the
- * payload carries a stable `eventId` so the workflow's write-back to
- * Convex is idempotent.
+ * payload carries a stable `eventId` so the workflow can claim the
+ * delivery before attempting to send email.
  *
  * Required Convex deployment env vars:
  * - N8N_BORROW_WEBHOOK_URL  (the n8n webhook production URL)
@@ -25,7 +25,7 @@ import { hmacSha256Hex } from "./lib/hmac";
  */
 export const sendBorrowRequestNotification = internalAction({
   args: { borrowRequestId: v.id("borrowRequests") },
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<{ skipped: true } | { sent: true; eventId: string }> => {
     const webhookUrl = process.env.N8N_BORROW_WEBHOOK_URL;
     const secret = process.env.N8N_WEBHOOK_SECRET;
     if (!webhookUrl || !secret) {

@@ -1,6 +1,8 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { canManage, requireUser } from "./lib/auth";
+import { publicDisplayName } from "./lib/displayName";
+import { findApprovedLoan } from "./lib/loans";
 
 /**
  * Public, read-only board. Deliberately callable WITHOUT authentication:
@@ -24,10 +26,20 @@ export const list = query({
 
     return await Promise.all(
       filtered.map(async (tool) => {
-        const owner = await ctx.db.get(tool.ownerId);
+        const [owner, activeLoan] = await Promise.all([
+          ctx.db.get(tool.ownerId),
+          tool.available ? findApprovedLoan(ctx.db, tool._id) : null,
+        ]);
         return {
-          ...tool,
-          ownerName: owner?.name ?? "Neighbour",
+          _id: tool._id,
+          ownerId: tool.ownerId,
+          name: tool.name,
+          description: tool.description,
+          category: tool.category,
+          condition: tool.condition,
+          location: tool.location,
+          available: tool.available && !activeLoan,
+          ownerName: publicDisplayName(owner?.name),
         };
       }),
     );
@@ -83,6 +95,11 @@ export const setAvailability = mutation({
     if (!canManage(user, tool.ownerId)) {
       throw new Error("Forbidden: only the owner or an admin can do that.");
     }
+    if (args.available && (await findApprovedLoan(ctx.db, tool._id))) {
+      throw new Error(
+        "Mark the active loan returned before making this tool available.",
+      );
+    }
     await ctx.db.patch(args.toolId, { available: args.available });
   },
 });
@@ -99,6 +116,9 @@ export const remove = mutation({
     if (!tool) throw new Error("Tool not found.");
     if (!canManage(user, tool.ownerId)) {
       throw new Error("Forbidden: only the owner or an admin can do that.");
+    }
+    if (await findApprovedLoan(ctx.db, tool._id)) {
+      throw new Error("Mark the active loan returned before removing this tool.");
     }
     const pending = await ctx.db
       .query("borrowRequests")

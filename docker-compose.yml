@@ -12,15 +12,14 @@
 # - NODE_FUNCTION_ALLOW_BUILTIN=crypto lets the Code nodes use Node's
 #   crypto module for HMAC signing/verification.
 # - N8N_BLOCK_ENV_ACCESS_IN_NODE=false lets Code nodes read
-#   LENDLOOP_WEBHOOK_SECRET / CONVEX_SITE_URL via $env. (In n8n Cloud,
-#   set the same variables in the instance environment instead.)
+#   LENDLOOP_WEBHOOK_SECRET / CONVEX_SITE_URL via $env.
 services:
   n8n:
     image: docker.n8n.io/n8nio/n8n:latest
     container_name: lendloop-n8n
     restart: unless-stopped
     ports:
-      - "5678:5678"
+      - "127.0.0.1:5678:5678"
     environment:
       - TZ=Europe/Berlin
       - GENERIC_TIMEZONE=Europe/Berlin

@@ -57,7 +57,7 @@ export default function Home() {
             No tools listed yet — be the first to lend something!
           </p>
         )}
-        {tools?.map((tool: any) => {
+        {tools?.map((tool) => {
           const isMine = me?._id === tool.ownerId;
           return (
             <article
@@ -73,7 +73,7 @@ export default function Home() {
                       : "bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
                   }`}
                 >
-                  {tool.available ? "Available" : "On loan"}
+                  {tool.available ? "Available" : "Unavailable"}
                 </span>
               </div>
               <p className="mt-1 line-clamp-3 text-sm opacity-80">

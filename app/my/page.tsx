@@ -55,9 +55,16 @@ function ActionButton({
 
 export default function MyLoansPage() {
   const [error, setError] = useState<string | null>(null);
-  const incoming = useQuery(api.borrowRequests.myIncoming);
-  const outgoing = useQuery(api.borrowRequests.myOutgoing);
-  const myTools = useQuery(api.tools.listMine);
+  const me = useQuery(api.users.me);
+  const queryArgs = me ? {} : "skip";
+  const incoming = useQuery(api.borrowRequests.myIncoming, queryArgs);
+  const outgoing = useQuery(api.borrowRequests.myOutgoing, queryArgs);
+  const myTools = useQuery(api.tools.listMine, queryArgs);
+  const onLoan = new Set(
+    incoming
+      ?.filter((request) => request.status === "approved")
+      .map((request) => request.toolId),
+  );
 
   const approve = useMutation(api.borrowRequests.approve);
   const decline = useMutation(api.borrowRequests.decline);
@@ -86,7 +93,7 @@ export default function MyLoansPage() {
               <p className="text-sm opacity-60">No requests yet.</p>
             )}
             <ul className="space-y-3">
-              {incoming?.map((r: any) => (
+              {incoming?.map((r) => (
                 <li
                   key={r._id}
                   className="rounded-xl border border-black/10 p-4 dark:border-white/15"
@@ -138,7 +145,7 @@ export default function MyLoansPage() {
               </p>
             )}
             <ul className="space-y-3">
-              {outgoing?.map((r: any) => (
+              {outgoing?.map((r) => (
                 <li
                   key={r._id}
                   className="rounded-xl border border-black/10 p-4 dark:border-white/15"
@@ -175,7 +182,7 @@ export default function MyLoansPage() {
               </p>
             )}
             <ul className="space-y-3">
-              {myTools?.map((t: any) => (
+              {myTools?.map((t) => (
                 <li
                   key={t._id}
                   className="flex items-center justify-between rounded-xl border border-black/10 p-4 dark:border-white/15"
@@ -183,26 +190,32 @@ export default function MyLoansPage() {
                   <div>
                     <span className="font-medium">{t.name}</span>
                     <span className="ml-2 text-xs opacity-60">
-                      {t.available ? "Available" : "On loan / unavailable"}
+                      {onLoan.has(t._id)
+                        ? "On loan"
+                        : t.available ? "Available" : "Paused"}
                     </span>
                   </div>
-                  <div className="flex gap-2">
-                    <ActionButton
-                      label={t.available ? "Pause" : "Make available"}
-                      onError={setError}
-                      onClick={() =>
-                        setAvailability({
-                          toolId: t._id,
-                          available: !t.available,
-                        })
-                      }
-                    />
-                    <ActionButton
-                      label="Remove"
-                      onError={setError}
-                      onClick={() => removeTool({ toolId: t._id })}
-                    />
-                  </div>
+                  {onLoan.has(t._id) ? (
+                    <p className="text-xs opacity-70">Return the active loan to relist.</p>
+                  ) : (
+                    <div className="flex gap-2">
+                      <ActionButton
+                        label={t.available ? "Pause" : "Make available"}
+                        onError={setError}
+                        onClick={() =>
+                          setAvailability({
+                            toolId: t._id,
+                            available: !t.available,
+                          })
+                        }
+                      />
+                      <ActionButton
+                        label="Remove"
+                        onError={setError}
+                        onClick={() => removeTool({ toolId: t._id })}
+                      />
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>

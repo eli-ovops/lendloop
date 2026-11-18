@@ -4,10 +4,12 @@ import {
   internalQuery,
   mutation,
   query,
+  type QueryCtx,
 } from "./_generated/server";
 import { internal } from "./_generated/api";
-import type { Doc } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { canManage, requireAdmin, requireUser } from "./lib/auth";
+import { findApprovedLoan } from "./lib/loans";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -29,7 +31,7 @@ function assertDateRange(startDate: string, endDate: string) {
 
 /** Attach display fields (tool name, borrower/owner names) to a request. */
 async function enrich(
-  ctx: { db: any },
+  ctx: QueryCtx,
   req: Doc<"borrowRequests">,
 ) {
   const [tool, borrower, owner] = await Promise.all([
@@ -63,17 +65,21 @@ export const request = mutation({
     endDate: v.string(),
     note: v.optional(v.string()),
   },
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<Id<"borrowRequests">> => {
     const user = await requireUser(ctx);
     const tool = await ctx.db.get(args.toolId);
     if (!tool) throw new Error("Tool not found.");
     if (tool.ownerId === user._id) {
       throw new Error("You cannot borrow your own tool.");
     }
-    if (!tool.available) {
+    if (!tool.available || (await findApprovedLoan(ctx.db, tool._id))) {
       throw new Error("This tool is currently unavailable.");
     }
     assertDateRange(args.startDate, args.endDate);
+    const note = args.note?.trim();
+    if (note && note.length > 200) {
+      throw new Error("Keep the borrow note to 200 characters or fewer.");
+    }
 
     const mine = await ctx.db
       .query("borrowRequests")
@@ -103,7 +109,7 @@ export const request = mutation({
       ownerId: tool.ownerId,
       startDate: args.startDate,
       endDate: args.endDate,
-      note: args.note?.trim() || undefined,
+      note: note || undefined,
       status: "pending",
       createdAt: Date.now(),
     });
@@ -146,10 +152,10 @@ export const myIncoming = query({
   },
 });
 
-async function loadRequest(ctx: { db: any }, id: string) {
+async function loadRequest(ctx: QueryCtx, id: Id<"borrowRequests">) {
   const req = await ctx.db.get(id);
   if (!req) throw new Error("Borrow request not found.");
-  return req as Doc<"borrowRequests">;
+  return req;
 }
 
 /** Approve a pending request. Tool owner or admin only. */
@@ -163,6 +169,13 @@ export const approve = mutation({
     }
     if (req.status !== "pending") {
       throw new Error(`Cannot approve a request in status "${req.status}".`);
+    }
+    const tool = await ctx.db.get(req.toolId);
+    if (!tool) throw new Error("Tool not found.");
+    if (!tool.available || (await findApprovedLoan(ctx.db, tool._id))) {
+      throw new Error(
+        "This tool is unavailable. Return any active loan before approving another.",
+      );
     }
     await ctx.db.patch(req._id, { status: "approved", decidedAt: Date.now() });
     // While a loan is out, the tool leaves the available pool.
@@ -226,7 +239,13 @@ export const markReturned = mutation({
       status: "returned",
       returnedAt: Date.now(),
     });
-    await ctx.db.patch(req.toolId, { available: true });
+    // Older versions could remove a tool or leave two approved loans.
+    // Allow the return in both cases without relisting an outstanding loan.
+    const tool = await ctx.db.get(req.toolId);
+    if (tool) {
+      const remainingLoan = await findApprovedLoan(ctx.db, tool._id);
+      await ctx.db.patch(tool._id, { available: !remainingLoan });
+    }
   },
 });
 
@@ -311,13 +330,31 @@ export const getOverdue = internalQuery({
   },
 });
 
-/**
- * Idempotent automation write-back. The first delivery of an eventId
- * inserts a log row; any retry (webhook redelivery, repeated cron run)
- * finds the existing row and reports `deduped: true` without writing
- * again. This is the single choke point that makes every n8n write-back
- * safe to retry.
- */
+/** Reserve one automatic SMTP attempt for an event, including after a retry. */
+export const claimEmailDelivery = internalMutation({
+  args: {
+    eventId: v.string(),
+    kind: v.union(v.literal("borrow_request_created"), v.literal("overdue_reminder")),
+    borrowRequestId: v.id("borrowRequests"),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("notificationLog")
+      .withIndex("by_eventId", (q) => q.eq("eventId", args.eventId))
+      .unique();
+    if (existing) return { claimed: false };
+
+    await ctx.db.insert("notificationLog", {
+      ...args,
+      deliveryState: "claimed",
+      detail: "SMTP attempt reserved",
+      createdAt: Date.now(),
+    });
+    return { claimed: true };
+  },
+});
+
+/** Complete the delivery claim, or record an error or legacy write-back. */
 export const logNotification = internalMutation({
   args: {
     eventId: v.string(),
@@ -331,6 +368,14 @@ export const logNotification = internalMutation({
       .withIndex("by_eventId", (q) => q.eq("eventId", args.eventId))
       .unique();
     if (existing) {
+      if (existing.deliveryState === "claimed" && existing.kind === args.kind) {
+        await ctx.db.patch(existing._id, {
+          deliveryState: "sent",
+          sentAt: Date.now(),
+          detail: args.detail.slice(0, 500),
+        });
+        return { deduped: false, logId: existing._id };
+      }
       return { deduped: true, logId: existing._id };
     }
     const logId = await ctx.db.insert("notificationLog", {
